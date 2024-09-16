@@ -17,7 +17,14 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
+
+
+import {console} from "forge-std/console.sol";
+
+
 
 contract OrdersHook is BaseHook, ERC1155 {
     using StateLibrary for IPoolManager;
@@ -25,15 +32,21 @@ contract OrdersHook is BaseHook, ERC1155 {
     using CurrencyLibrary for Currency;
     using FixedPointMathLib for uint256;
 
+    struct CowOrder {
+        address user;
+        int256 orderAmount;
+        int24 minimumTick;
+        uint256 timestamp;
+    }
+
     // Storage
     mapping(PoolId poolId => int24 lastTick) public lastTicks;
-    mapping(PoolId poolId => mapping(int24 tickToSellAt => mapping(bool zeroForOne => uint256 inputAmount)))
-        public pendingOrders;
+    mapping(PoolId poolId => mapping(int24 tickToSellAt => mapping(bool zeroForOne => uint256 inputAmount))) public pendingOrders;
 
-    mapping(uint256 positionId => uint256 outputClaimable)
-        public claimableOutputTokens;
-    mapping(uint256 positionId => uint256 claimsSupply)
-        public claimTokensSupply;
+    mapping(uint256 positionId => uint256 outputClaimable) public claimableOutputTokens;
+    mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
+
+    mapping(PoolId poolId => mapping(Currency token0 => mapping(Currency token1 => CowOrder order))) public cowOrders;
 
     // Errors
     error InvalidOrder();
@@ -48,9 +61,7 @@ contract OrdersHook is BaseHook, ERC1155 {
 
     // BaseHook Functions
     function getHookPermissions()
-        public
-        pure
-        override
+        public pure override
         returns (Hooks.Permissions memory)
     {
         return
@@ -61,11 +72,11 @@ contract OrdersHook is BaseHook, ERC1155 {
                 afterAddLiquidity: false,
                 beforeRemoveLiquidity: false,
                 afterRemoveLiquidity: false,
-                beforeSwap: false,
+                beforeSwap: true,
                 afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
-                beforeSwapReturnDelta: false,
+                beforeSwapReturnDelta: true,
                 afterSwapReturnDelta: false,
                 afterAddLiquidityReturnDelta: false,
                 afterRemoveLiquidityReturnDelta: false
@@ -73,26 +84,71 @@ contract OrdersHook is BaseHook, ERC1155 {
     }
 
     function afterInitialize(
-        address,
-        PoolKey calldata key,
-        uint160,
-        int24 tick,
-        bytes calldata
+        address, PoolKey calldata key, uint160, int24 tick, bytes calldata
     ) external override onlyPoolManager returns (bytes4) {
         lastTicks[key.toId()] = tick;
         return this.afterInitialize.selector;
     }
 
+
+    // swapper must choose whether the swap is to be immediate or wait for a CoW
+    // If wait for a CoW, precise deadline and minimum price
+
+    function beforeSwap(
+        address sender, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata hookData
+    ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
+        // (maybe it's a good idea to go into beforeSwap, then fullfilled limit orders could also mathc CoWs)
+        //if (sender == address(this)) return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+
+        // Should we try to find and match orders. True initially
+        bool tryMore = true;
+        int256 remainingTokensToSwap = params.amountSpecified;
+        BeforeSwapDelta beforeSwapDelta = BeforeSwapDeltaLibrary.ZERO_DELTA;
+
+        while (tryMore) {
+            // Try executing matching pending orders for this pool
+
+            // `tryMore` is true if we successfully found and fullfilled a CoW and therefore we need to look again if there we can still fullfill another CoW
+
+            // `remainingTokensToSwap` is the amount left after fullfilling an order if no order was executed, `remainingTokensToSwap` will be the same as params.amountSpecified, and `tryMore` will be false
+            (tryMore, remainingTokensToSwap) = tryMatchingCows(
+                key,
+                remainingTokensToSwap,
+                !params.zeroForOne
+            );
+        }
+
+        // check if CoW order or regular order
+        if(hookData.length > 0) {
+            // this NoOp will only for swap exact input and not exact output swaps
+            require(remainingTokensToSwap < 0, "Must have an exact input swap to place CoW order");
+            remainingTokensToSwap = - remainingTokensToSwap;
+            // decode hookData to get deadline and minimum acceptable price
+            (uint256 deadline, int24 minimumTick) = abi.decode(hookData,(uint256,int24));
+            // beforeSwapDelta specified amount = negative(amountSpecified) to let it become a NoOp (letting amountToSwap become 0 in Hooks.sol) and unspecified amount to 0
+            // change , so that we take the input and swapper gets back nothing in return for the moment
+            beforeSwapDelta = toBeforeSwapDelta(int128(remainingTokensToSwap), 0);
+            // create CoW order
+            // take custody of the input tokens
+            CowOrder memory cowOrder = CowOrder(sender, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
+            (Currency sellToken, Currency buyToken) = params.zeroForOne 
+                ? (key.currency0, key.currency1)
+                : (key.currency1, key.currency0);
+
+            cowOrders[key.toId()][sellToken][buyToken] = cowOrder;
+
+            poolManager.take(sellToken, address(this), uint256(remainingTokensToSwap));
+        }
+
+        // after our orders are executed
+        return (this.beforeSwap.selector, beforeSwapDelta, 0);
+    }
+
     function afterSwap(
-        address sender,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata params,
-        BalanceDelta,
-        bytes calldata
+        address sender, PoolKey calldata key, IPoolManager.SwapParams calldata params, BalanceDelta, bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
-        // `sender` is the address which initiated the swap
-        // if `sender` is the hook, we don't want to go down the `afterSwap`
-        // rabbit hole again
+
+        // `sender` is the address which initiated the swap if `sender` is the hook, we don't want to go down the `afterSwap` rabbit hole again
         if (sender == address(this)) return (this.afterSwap.selector, 0);
 
         // Should we try to find and execute orders? True initially
@@ -102,34 +158,25 @@ contract OrdersHook is BaseHook, ERC1155 {
         while (tryMore) {
             // Try executing pending orders for this pool
 
-            // `tryMore` is true if we successfully found and executed an order
-            // which shifted the tick value
-            // and therefore we need to look again if there are any pending orders
+            // `tryMore` is true if we successfully found and executed an order which shifted the tick value and therefore we need to look again if there are any pending orders
             // within the new tick range
 
-            // `tickAfterExecutingOrder` is the tick value of the pool
-            // after executing an order
-            // if no order was executed, `tickAfterExecutingOrder` will be
-            // the same as current tick, and `tryMore` will be false
+            // `tickAfterExecutingOrder` is the tick value of the pool after executing an orderif no order was executed, `tickAfterExecutingOrder` will be the same as current tick, and `tryMore` will be false
             (tryMore, currentTick) = tryExecutingOrders(
                 key,
                 !params.zeroForOne
             );
         }
 
-        // New last known tick for this pool is the tick value
-        // after our orders are executed
+        // New last known tick for this pool is the tick value after our orders are executed
         lastTicks[key.toId()] = currentTick;
         return (this.afterSwap.selector, 0);
     }
 
     // Core Hook External Functions
     function placeOrder(
-        PoolKey calldata key,
-        int24 tickToSellAt,
-        bool zeroForOne,
-        uint256 inputAmount
-    ) external returns (int24) {
+        PoolKey calldata key,int24 tickToSellAt, bool zeroForOne, uint256 inputAmount
+    ) public returns (int24) {
         // Get lower actually usable tick given `tickToSellAt`
         int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
         // Create a pending order
@@ -140,8 +187,7 @@ contract OrdersHook is BaseHook, ERC1155 {
         claimTokensSupply[positionId] += inputAmount;
         _mint(msg.sender, positionId, inputAmount, "");
 
-        // Depending on direction of swap, we select the proper input token
-        // and request a transfer of those tokens to the hook contract
+        // Depending on direction of swap, we select the proper input token and request a transfer of those tokens to the hook contract
         address sellToken = zeroForOne
             ? Currency.unwrap(key.currency0)
             : Currency.unwrap(key.currency1);
@@ -152,9 +198,7 @@ contract OrdersHook is BaseHook, ERC1155 {
     }
 
     function cancelOrder(
-        PoolKey calldata key,
-        int24 tickToSellAt,
-        bool zeroForOne
+        PoolKey calldata key, int24 tickToSellAt, bool zeroForOne
     ) external {
         // Get lower actually usable tick for their order
         int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
@@ -177,10 +221,7 @@ contract OrdersHook is BaseHook, ERC1155 {
     }
 
     function redeem(
-        PoolKey calldata key,
-        int24 tickToSellAt,
-        bool zeroForOne,
-        uint256 inputAmountToClaimFor
+        PoolKey calldata key, int24 tickToSellAt, bool zeroForOne, uint256 inputAmountToClaimFor
     ) external {
         // Get lower actually usable tick for their order
         int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
@@ -216,8 +257,21 @@ contract OrdersHook is BaseHook, ERC1155 {
     }
 
     // Internal Functions
+
+    function tryMatchingCows(
+        PoolKey calldata key,
+        int256 amountOut,
+        bool executeZeroForOne
+    ) internal returns (bool tryMore, int256 remainingTokensToSwap)
+    {
+        // Look for match
+        remainingTokensToSwap = amountOut;
+        if(remainingTokensToSwap == amountOut) return (false, amountOut);
+    }
+
     function tryExecutingOrders(
         PoolKey calldata key,
+
         bool executeZeroForOne
     ) internal returns (bool tryMore, int24 newTick) {
         (, int24 currentTick, , ) = poolManager.getSlot0(key.toId());

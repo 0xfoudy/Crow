@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 // Foundry libraries
-import {Test} from "forge-std/Test.sol";
+import {Test, console} from "forge-std/Test.sol";
 
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
@@ -21,6 +21,7 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 // Our contracts
 import {OrdersHook} from "../src/OrdersHook.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract OrdersHookTest is Test, Deployers {
     // Use the libraries
@@ -43,7 +44,7 @@ contract OrdersHookTest is Test, Deployers {
 
         // Deploy our hook
         uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG
+            Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo(
@@ -347,5 +348,35 @@ contract OrdersHookTest is Test, Deployers {
 
         tokensLeftToSell = hook.pendingOrders(key.toId(), 60, true);
         assertEq(tokensLeftToSell, 0);
+    }
+
+
+    function test_createCowSwap() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
+        uint256 amount = 10e18;
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 100;
+
+        // Note the original balance of token0 we have
+        uint256 originalBalance = token0.balanceOfSelf();
+        uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
+
+        // Do a the swap
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -10 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(deadline, tick);
+        
+
+       
+        swapRouter.swap(key, params, testSettings, data);
+        assertEq(originalBalance - token0.balanceOfSelf(), 10e18);
+        assertEq(MockERC20(Currency.unwrap(token0)).balanceOf(address(hook)) - hookBalance, 10e18);
     }
 }
