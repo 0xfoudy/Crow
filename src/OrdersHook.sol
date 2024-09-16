@@ -19,7 +19,7 @@ import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
-contract TakeProfitsHook is BaseHook, ERC1155 {
+contract OrdersHook is BaseHook, ERC1155 {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
