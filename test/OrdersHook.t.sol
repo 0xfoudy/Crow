@@ -356,7 +356,6 @@ contract OrdersHookTest is Test, Deployers {
             .TestSettings({takeClaims: false, settleUsingBurn: false});
 
         // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
-        uint256 amount = 10e18;
         bool zeroForOne = true;
         uint256 deadline = 10;
         int24 tick = 100;
@@ -378,5 +377,125 @@ contract OrdersHookTest is Test, Deployers {
         swapRouter.swap(key, params, testSettings, data);
         assertEq(originalBalance - token0.balanceOfSelf(), 10e18);
         assertEq(MockERC20(Currency.unwrap(token0)).balanceOf(address(hook)) - hookBalance, 10e18);
+    }
+
+
+    function test_matchCowAtCurrentTick() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 0;
+
+        // Note the original balance of token0 we have
+        uint256 originalBalance = token0.balanceOfSelf();
+        uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
+
+        // Do a the swap
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -10 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(deadline, tick);
+        
+        IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
+            zeroForOne: false,
+            amountSpecified: -10 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        swapRouter.swap(key, params, testSettings, data);
+        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 10e18);
+
+        swapRouter.swap(key, reverseParams, testSettings, data);
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 0);
+
+        uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length;
+        // make sure other order wasn't done cause it was fully fullfilled
+        assertEq(inverseOrderLength, 0);
+    }
+
+    function test_halfMatchCowAtCurrentTick() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 0;
+
+        // Note the original balance of token0 we have
+        uint256 originalBalance = token0.balanceOfSelf();
+        uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
+
+        // Do a the swap
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -10 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(deadline, tick);
+        
+        IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
+            zeroForOne: false,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        swapRouter.swap(key, params, testSettings, data);
+        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 10e18);
+
+        swapRouter.swap(key, reverseParams, testSettings, data);
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 5e18);
+
+        uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length;
+        // make sure other order wasn't done cause it was fully fullfilled
+        assertEq(inverseOrderLength, 0);
+    }
+
+    function test_overMatchCowAtCurrentTick() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 0;
+
+        // Note the original balance of token0 we have
+        uint256 originalBalance = token0.balanceOfSelf();
+        uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
+
+        // Do a the swap
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -3 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(deadline, tick);
+        
+        IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
+            zeroForOne: false,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        swapRouter.swap(key, params, testSettings, data);
+        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 3e18);
+
+        swapRouter.swap(key, reverseParams, testSettings, data);
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 0);
+
+        order = hook.getCowOrders(key.toId(), key.currency1, key.currency0)[0];
+        assertEq(order.orderAmount, 2e18);
     }
 }

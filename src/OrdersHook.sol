@@ -14,7 +14,9 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import {FullMath} from "v4-core/libraries/FullMath.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
+
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
@@ -36,7 +38,7 @@ contract OrdersHook is BaseHook, ERC1155 {
         address user;
         int256 orderAmount;
         int24 minimumTick;
-        uint256 timestamp;
+        uint256 deadline;
     }
 
     // Storage
@@ -46,7 +48,7 @@ contract OrdersHook is BaseHook, ERC1155 {
     mapping(uint256 positionId => uint256 outputClaimable) public claimableOutputTokens;
     mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
 
-    mapping(PoolId poolId => mapping(Currency token0 => mapping(Currency token1 => CowOrder order))) public cowOrders;
+    mapping(PoolId poolId => mapping(Currency token0 => mapping(Currency token1 => CowOrder[] order))) public cowOrders;
 
     // Errors
     error InvalidOrder();
@@ -105,39 +107,35 @@ contract OrdersHook is BaseHook, ERC1155 {
         int256 remainingTokensToSwap = params.amountSpecified;
         BeforeSwapDelta beforeSwapDelta = BeforeSwapDeltaLibrary.ZERO_DELTA;
 
-        while (tryMore) {
-            // Try executing matching pending orders for this pool
+        (Currency sellToken, Currency buyToken) = params.zeroForOne 
+                ? (key.currency0, key.currency1)
+                : (key.currency1, key.currency0);
 
-            // `tryMore` is true if we successfully found and fullfilled a CoW and therefore we need to look again if there we can still fullfill another CoW
+        // Try executing matching pending orders for this pool 
+        // `remainingTokensToSwap` is the amount left after fullfilling an order if no order was executed, `remainingTokensToSwap` will be the same as params.amountSpecified, and `tryMore` will be false
 
-            // `remainingTokensToSwap` is the amount left after fullfilling an order if no order was executed, `remainingTokensToSwap` will be the same as params.amountSpecified, and `tryMore` will be false
-            (tryMore, remainingTokensToSwap) = tryMatchingCows(
-                key,
-                remainingTokensToSwap,
-                !params.zeroForOne
-            );
-        }
-
+        remainingTokensToSwap = tryMatchingCows(
+            sender,
+            key,
+            buyToken,
+            sellToken,
+            remainingTokensToSwap
+        );
         // check if CoW order or regular order
         if(hookData.length > 0) {
             // this NoOp will only for swap exact input and not exact output swaps
-            require(remainingTokensToSwap < 0, "Must have an exact input swap to place CoW order");
-            remainingTokensToSwap = - remainingTokensToSwap;
             // decode hookData to get deadline and minimum acceptable price
             (uint256 deadline, int24 minimumTick) = abi.decode(hookData,(uint256,int24));
             // beforeSwapDelta specified amount = negative(amountSpecified) to let it become a NoOp (letting amountToSwap become 0 in Hooks.sol) and unspecified amount to 0
             // change , so that we take the input and swapper gets back nothing in return for the moment
-            beforeSwapDelta = toBeforeSwapDelta(int128(remainingTokensToSwap), 0);
-            // create CoW order
-            // take custody of the input tokens
-            CowOrder memory cowOrder = CowOrder(sender, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
-            (Currency sellToken, Currency buyToken) = params.zeroForOne 
-                ? (key.currency0, key.currency1)
-                : (key.currency1, key.currency0);
-
-            cowOrders[key.toId()][sellToken][buyToken] = cowOrder;
-
-            poolManager.take(sellToken, address(this), uint256(remainingTokensToSwap));
+            beforeSwapDelta = toBeforeSwapDelta(int128(- params.amountSpecified), 0);
+            if(remainingTokensToSwap > 0){
+                // create CoW order
+                // take custody of the input tokens
+                CowOrder memory cowOrder = CowOrder(sender, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
+                cowOrders[key.toId()][sellToken][buyToken].push(cowOrder);
+                poolManager.take(sellToken, address(this), uint256(remainingTokensToSwap));
+            }
         }
 
         // after our orders are executed
@@ -171,6 +169,10 @@ contract OrdersHook is BaseHook, ERC1155 {
         // New last known tick for this pool is the tick value after our orders are executed
         lastTicks[key.toId()] = currentTick;
         return (this.afterSwap.selector, 0);
+    }
+
+    function getCowOrders(PoolId id, Currency token0, Currency token1) public returns (CowOrder[] memory orders) {
+        return cowOrders[id][token0][token1];
     }
 
     // Core Hook External Functions
@@ -258,22 +260,80 @@ contract OrdersHook is BaseHook, ERC1155 {
 
     // Internal Functions
 
-    function tryMatchingCows(
-        PoolKey calldata key,
-        int256 amountOut,
-        bool executeZeroForOne
-    ) internal returns (bool tryMore, int256 remainingTokensToSwap)
+    function tryMatchingCows(address sender, PoolKey memory key, Currency buyToken, Currency sellToken, int256 amountOut) internal returns (int256 remainingTokensToSwap)
     {
+        remainingTokensToSwap = - amountOut;
         // Look for match
-        remainingTokensToSwap = amountOut;
-        if(remainingTokensToSwap == amountOut) return (false, amountOut);
+        PoolId id = key.toId();
+
+        for(uint256 i = 0; i < cowOrders[id][buyToken][sellToken].length && remainingTokensToSwap > 0; ++i){
+            CowOrder storage order = cowOrders[id][buyToken][sellToken][i];
+            if(!isCowOrderExpired(order) && isCowOrderFullfillable(order, id, buyToken, sellToken, remainingTokensToSwap)) {
+                remainingTokensToSwap = executeCow(sender, order, key, buyToken, sellToken, remainingTokensToSwap);
+            }
+        }
+        if(remainingTokensToSwap == - amountOut) return - amountOut;
     }
 
-    function tryExecutingOrders(
-        PoolKey calldata key,
+    function isCowOrderExpired(CowOrder memory order) internal view returns (bool) {
+        return order.orderAmount < 0 || block.timestamp > order.deadline;
+    }
 
-        bool executeZeroForOne
-    ) internal returns (bool tryMore, int24 newTick) {
+    function isCowOrderFullfillable(CowOrder memory order, PoolId id, Currency buyToken, Currency sellToken, int256 remainingTokensToSwap) internal returns (bool) {
+        (, int24 currentTick, , ) = poolManager.getSlot0(id);
+        if(currentTick >= order.minimumTick) return true;
+        return false;
+    }
+
+    // Calculate the amount of token out given an input amount and a tick
+    function getAmountOut(int24 tick, uint256 inputAmount, bool zeroForOne) public pure returns (uint256) {
+        uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
+        uint256 price = (uint256(sqrtPriceX96) * uint256(sqrtPriceX96)) >> 96;
+
+        // Calculate the output amount
+        uint256 amountOut;
+        if (zeroForOne) {
+            amountOut = FullMath.mulDiv(inputAmount, price, 2**96);
+        } else {
+            amountOut = FullMath.mulDiv(inputAmount, 2**96, price);
+        }
+
+        return amountOut;
+    }
+
+    // Give the sender the tokens requested to buy, give the fullfilled order's user the tokens requested to buy 
+    function executeCow(address sender, CowOrder storage order, PoolKey memory key, Currency buyToken, Currency sellToken, int256 remainingAmountToSwap) internal returns (int256 remainingAmount){
+        PoolId id = key.toId();
+        (, int24 currentTick, , ) = poolManager.getSlot0(id);
+        bool zeroForOne = key.currency0 == sellToken;
+        // Amount Sender should get
+        int256 amountOutOfSender = int256(getAmountOut(currentTick, uint256(remainingAmountToSwap), zeroForOne));
+
+        // Amount Orderer should get
+        int256 amountOutOfOrderer = int256(getAmountOut(currentTick, uint256(order.orderAmount), !zeroForOne));
+
+        // order partially fullfilled
+        if (amountOutOfSender < order.orderAmount) {
+            order.orderAmount -= amountOutOfSender;
+            remainingAmount = 0;
+            // sender receives the full amount out expected for their tokens
+            IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(amountOutOfSender));
+            // user receives all the tokens offered by sender
+            poolManager.take(sellToken, order.user, uint256(remainingAmountToSwap));
+
+        }
+        else {
+            int256 oldOrderAmount = order.orderAmount;
+            order.orderAmount = 0;
+            remainingAmount = remainingAmountToSwap - amountOutOfOrderer;
+            // sender receives the full amount out expected for their tokens
+            IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(oldOrderAmount));
+            // user receives all the tokens offered by sender
+            poolManager.take(sellToken, order.user, uint256(amountOutOfOrderer));
+        }
+    }
+
+    function tryExecutingOrders(PoolKey calldata key, bool executeZeroForOne) internal returns (bool tryMore, int24 newTick) {
         (, int24 currentTick, , ) = poolManager.getSlot0(key.toId());
         int24 lastTick = lastTicks[key.toId()];
 
