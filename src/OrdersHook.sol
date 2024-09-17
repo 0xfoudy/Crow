@@ -23,22 +23,23 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@unisw
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
+import {CowOrderMinHeap} from "./CowOrderMinHeap.sol";
+import "./Structs.sol";
 
 import {console} from "forge-std/console.sol";
 
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-
-contract OrdersHook is BaseHook, ERC1155 {
+contract OrdersHook is BaseHook, ERC1155, Ownable {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using FixedPointMathLib for uint256;
+    using Structs for Structs.CowOrder;
 
-    struct CowOrder {
-        address user;
-        int256 orderAmount;
-        int24 minimumTick;
-        uint256 deadline;
+    struct OrderHeaps {
+        bool isInit;
+        CowOrderMinHeap heap;
     }
 
     // Storage
@@ -48,7 +49,7 @@ contract OrdersHook is BaseHook, ERC1155 {
     mapping(uint256 positionId => uint256 outputClaimable) public claimableOutputTokens;
     mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
 
-    mapping(PoolId poolId => mapping(Currency token0 => mapping(Currency token1 => CowOrder[] order))) public cowOrders;
+    mapping(PoolId poolId => mapping(Currency token0 => mapping(Currency token1 => OrderHeaps orderHeap))) public cowOrders;
     mapping(Currency currency => int256 rewardBalance) rewards;
 
     // Errors
@@ -60,7 +61,7 @@ contract OrdersHook is BaseHook, ERC1155 {
     constructor(
         IPoolManager _manager,
         string memory _uri
-    ) BaseHook(_manager) ERC1155(_uri) {}
+    ) BaseHook(_manager) ERC1155(_uri) Ownable(msg.sender){}
 
     // BaseHook Functions
     function getHookPermissions()
@@ -111,6 +112,12 @@ contract OrdersHook is BaseHook, ERC1155 {
         (Currency sellToken, Currency buyToken) = params.zeroForOne 
                 ? (key.currency0, key.currency1)
                 : (key.currency1, key.currency0);
+        
+        if(!cowOrders[key.toId()][buyToken][sellToken].isInit){
+            CowOrderMinHeap heap = new CowOrderMinHeap();
+            OrderHeaps memory heapStruct = OrderHeaps(true, heap);
+            cowOrders[key.toId()][buyToken][sellToken] = heapStruct;
+        }
 
         // Try executing matching pending orders for this pool 
         // `remainingTokensToSwap` is the amount left after fullfilling an order if no order was executed, `remainingTokensToSwap` will be the same as params.amountSpecified, and `tryMore` will be false
@@ -123,7 +130,6 @@ contract OrdersHook is BaseHook, ERC1155 {
         );
         
         beforeSwapDelta = toBeforeSwapDelta(int128(- params.amountSpecified - remainingTokensToSwap), 0);
-
         // check if CoW order or regular order
         if(hookData.length > 0) {
             // this NoOp will only for swap exact input and not exact output swaps
@@ -133,10 +139,14 @@ contract OrdersHook is BaseHook, ERC1155 {
             // change , so that we take the input and swapper gets back nothing in return for the moment
             beforeSwapDelta = toBeforeSwapDelta(int128(- params.amountSpecified), 0);
             if(remainingTokensToSwap > 0){
-                // create CoW order
-                // take custody of the input tokens
-                CowOrder memory cowOrder = CowOrder(user, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
-                cowOrders[key.toId()][sellToken][buyToken].push(cowOrder);
+                // create CoW order take custody of the input tokens
+                Structs.CowOrder memory cowOrder = Structs.CowOrder(user, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
+                if(!cowOrders[key.toId()][sellToken][buyToken].isInit){
+                    CowOrderMinHeap heap = new CowOrderMinHeap();
+                    OrderHeaps memory heapStruct = OrderHeaps(true, heap);
+                    cowOrders[key.toId()][sellToken][buyToken] = heapStruct;
+                }
+                cowOrders[key.toId()][sellToken][buyToken].heap.insert(cowOrder);
                 poolManager.take(sellToken, address(this), uint256(remainingTokensToSwap));
             }
         }
@@ -173,8 +183,8 @@ contract OrdersHook is BaseHook, ERC1155 {
         return (this.afterSwap.selector, 0);
     }
 
-    function getCowOrders(PoolId id, Currency token0, Currency token1) public returns (CowOrder[] memory orders) {
-        return cowOrders[id][token0][token1];
+    function getCowOrders(PoolId id, Currency token0, Currency token1) public returns (CowOrderMinHeap orders) {
+        return cowOrders[id][token0][token1].heap;
     }
 
     // Core Hook External Functions
@@ -267,21 +277,20 @@ contract OrdersHook is BaseHook, ERC1155 {
         remainingTokensToSwap = - amountOut;
         // Look for match
         PoolId id = key.toId();
-
-        for(uint256 i = 0; i < cowOrders[id][buyToken][sellToken].length && remainingTokensToSwap > 0; ++i){
-            CowOrder storage order = cowOrders[id][buyToken][sellToken][i];
+        for(uint256 i = 0; i < cowOrders[id][buyToken][sellToken].heap.length() && remainingTokensToSwap > 0; ++i){
+            Structs.CowOrder memory order = cowOrders[id][buyToken][sellToken].heap.getOrder(i);
             if(!isCowOrderExpired(order) && isCowOrderFullfillable(order, id, buyToken, sellToken, remainingTokensToSwap)) {
-                remainingTokensToSwap = executeCow(sender, order, key, buyToken, sellToken, remainingTokensToSwap);
+                remainingTokensToSwap = executeCow(sender, cowOrders[id][buyToken][sellToken], i, key, buyToken, sellToken, remainingTokensToSwap);
             }
         }
         if(remainingTokensToSwap == - amountOut) return - amountOut;
     }
 
-    function isCowOrderExpired(CowOrder memory order) internal view returns (bool) {
+    function isCowOrderExpired(Structs.CowOrder memory order) internal view returns (bool) {
         return order.orderAmount < 0 || block.timestamp > order.deadline;
     }
 
-    function isCowOrderFullfillable(CowOrder memory order, PoolId id, Currency buyToken, Currency sellToken, int256 remainingTokensToSwap) internal returns (bool) {
+    function isCowOrderFullfillable(Structs.CowOrder memory order, PoolId id, Currency buyToken, Currency sellToken, int256 remainingTokensToSwap) internal returns (bool) {
         (, int24 currentTick, , ) = poolManager.getSlot0(id);
         if(currentTick >= order.minimumTick) return true;
         return false;
@@ -303,10 +312,12 @@ contract OrdersHook is BaseHook, ERC1155 {
     }
 
     // Give the sender the tokens requested to buy, give the fullfilled order's user the tokens requested to buy 
-    function executeCow(address sender, CowOrder storage order, PoolKey memory key, Currency buyToken, Currency sellToken, int256 remainingAmountToSwap) internal returns (int256 remainingAmount){
+    function executeCow(address sender, OrderHeaps storage orderHeap, uint256 orderIndex, PoolKey memory key, Currency buyToken, Currency sellToken, int256 remainingAmountToSwap) internal returns (int256 remainingAmount){
+        Structs.CowOrder memory order = orderHeap.heap.getOrder(orderIndex);
         PoolId id = key.toId();
         (, int24 currentTick, , ) = poolManager.getSlot0(id);
         bool zeroForOne = key.currency0 == sellToken;
+
         // Amount Sender should get
         int256 amountOutOfSender = int256(getAmountOut(currentTick, uint256(remainingAmountToSwap), zeroForOne));
 
@@ -315,7 +326,7 @@ contract OrdersHook is BaseHook, ERC1155 {
 
         // order partially fullfilled
         if (amountOutOfSender < order.orderAmount) {
-            order.orderAmount -= amountOutOfSender;
+            orderHeap.heap.fullfillOrder(orderIndex, amountOutOfSender);
             remainingAmount = 0;
             // sender receives the full amount out expected for their tokens
             IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(amountOutOfSender));
@@ -327,7 +338,7 @@ contract OrdersHook is BaseHook, ERC1155 {
         }
         else {
             int256 oldOrderAmount = order.orderAmount;
-            order.orderAmount = 0;
+            orderHeap.heap.fullfillOrder(orderIndex, oldOrderAmount);
             remainingAmount = remainingAmountToSwap - (amountOutOfOrderer*15/10000 + amountOutOfOrderer*9985/10000);
             // sender receives the full amount out expected for their tokens
             IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(oldOrderAmount));

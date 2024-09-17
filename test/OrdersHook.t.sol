@@ -19,8 +19,10 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 
+
 // Our contracts
 import {OrdersHook} from "../src/OrdersHook.sol";
+import "../src/Structs.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract OrdersHookTest is Test, Deployers {
@@ -409,14 +411,14 @@ contract OrdersHookTest is Test, Deployers {
         });
 
         swapRouter.swap(key, params, testSettings, data);
-        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        Structs.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 10e18);
 
         swapRouter.swap(key, reverseParams, testSettings, data);
-        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 0);
 
-        uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length;
+        uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length();
         // make sure other order wasn't done cause it was fully fullfilled
         assertEq(inverseOrderLength, 0);
 
@@ -453,14 +455,14 @@ contract OrdersHookTest is Test, Deployers {
         });
 
         swapRouter.swap(key, params, testSettings, data);
-        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        Structs.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 10e18);
 
         swapRouter.swap(key, reverseParams, testSettings, data);
-        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 5e18);
 
-        uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length;
+        uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length();
         // make sure other order wasn't done cause it was fully fullfilled
         assertEq(inverseOrderLength, 0);
     }
@@ -493,14 +495,13 @@ contract OrdersHookTest is Test, Deployers {
         });
 
         swapRouter.swap(key, params, testSettings, data);
-        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        Structs.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 3e18);
-
         swapRouter.swap(key, reverseParams, testSettings, data);
-        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 0);
 
-        order = hook.getCowOrders(key.toId(), key.currency1, key.currency0)[0];
+        order = hook.getCowOrders(key.toId(), key.currency1, key.currency0).getOrder(0);
         assertEq(order.orderAmount, 2e18);
     }
 
@@ -527,7 +528,7 @@ contract OrdersHookTest is Test, Deployers {
         
 
         swapRouter.swap(key, params, testSettings, data);
-        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        Structs.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 3e18);
 
         // Do a separate swap from oneForZero to make tick go up
@@ -549,7 +550,7 @@ contract OrdersHookTest is Test, Deployers {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
         swapRouter.swap(key, reverseParams, testSettings, ZERO_BYTES);
-        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 0);
     }
 
@@ -576,7 +577,7 @@ contract OrdersHookTest is Test, Deployers {
         
 
         swapRouter.swap(key, params, testSettings, data);
-        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        Structs.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 3e18);
 
         // Do a separate swap from oneForZero to make tick go up
@@ -598,8 +599,11 @@ contract OrdersHookTest is Test, Deployers {
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
         swapRouter.swap(key, reverseParams, testSettings, ZERO_BYTES);
-        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
         assertEq(order.orderAmount, 0);
+    }
+
+    function test_array() public {
     }
 
 }
