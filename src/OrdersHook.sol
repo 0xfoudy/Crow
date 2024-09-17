@@ -37,6 +37,12 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
     using FixedPointMathLib for uint256;
     using Structs for Structs.CowOrder;
 
+    struct CallbackData {
+        address sender;
+        PoolKey key;
+        IPoolManager.SwapParams params;
+    }
+
     struct OrderHeaps {
         bool isInit;
         CowOrderMinHeap heap;
@@ -292,6 +298,81 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         sellToken.transfer(msg.sender, uint256(removedOrder.orderAmount));
     }
 
+    function fulfillExpiredOrder(PoolKey calldata key, Currency sellToken, Currency buyToken) external {
+        PoolId id = key.toId();
+        require(cowOrders[id][sellToken][buyToken].isInit, "No orders for this pool");
+        
+        CowOrderMinHeap heap = cowOrders[id][sellToken][buyToken].heap;
+        require(heap.length() > 0, "No orders to fulfill");
+
+        uint256 orderIndex = type(uint256).max;
+        Structs.CowOrder memory orderToFulfill;
+
+        // Find the first expired order for the caller
+        for (uint256 i = 0; i < heap.length(); i++) {
+            Structs.CowOrder memory order = heap.getOrder(i);
+            if (order.user == msg.sender && block.timestamp > order.deadline && isCowOrderFullfillable(order, id)) {
+                orderIndex = i;
+                orderToFulfill = order;
+                break;
+            }
+        }
+
+        require(orderIndex != type(uint256).max, "No expired order found for the user");
+
+        // Remove the expired order from the heap
+        heap.removeAt(orderIndex);
+
+        // Determine if it's a zeroForOne swap
+        bool zeroForOne = key.currency0 == sellToken;
+
+        // Prepare swap parameters
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: zeroForOne,
+            amountSpecified: - orderToFulfill.orderAmount,
+            sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Perform the swap
+        BalanceDelta delta = abi.decode(poolManager.unlock(
+            abi.encode(
+                CallbackData(
+                    msg.sender,
+                    key,
+                    params
+                )
+            )
+        ), (BalanceDelta));
+    }
+
+    function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
+        CallbackData memory callbackData = abi.decode(data, (CallbackData));
+        PoolKey memory key = callbackData.key;
+      //  BalanceDelta delta = swapAndSettleBalances(key, callbackData.params);
+        BalanceDelta delta = poolManager.swap(key, callbackData.params, ""); 
+        // If we just did a zeroForOne swap We need to send Token 0 to PM, and receive Token 1 from PM
+        if (callbackData.params.zeroForOne) {
+            // Negative Value => Money leaving user's wallet Settle with PoolManager
+            if (delta.amount0() < 0) {
+                _settle(key.currency0, uint128(-delta.amount0()));
+            }
+
+            // Positive Value => Money coming into user's wallet Take from PM
+            if (delta.amount1() > 0) {
+                poolManager.take(key.currency1, callbackData.sender, uint128(delta.amount1()));
+            }
+        } else {
+            if (delta.amount1() < 0) {
+                _settle(key.currency1, uint128(-delta.amount1()));
+            }
+
+            if (delta.amount0() > 0) {
+                poolManager.take(key.currency0, callbackData.sender, uint128(delta.amount0()));
+            }
+        }
+        return abi.encode(delta);
+    }
+
     // Internal Functions
 
     function tryMatchingCows(address sender, PoolKey memory key, Currency buyToken, Currency sellToken, int256 amountOut) internal returns (int256 remainingTokensToSwap)
@@ -301,7 +382,7 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         PoolId id = key.toId();
         for(uint256 i = 0; i < cowOrders[id][buyToken][sellToken].heap.length() && remainingTokensToSwap > 0; ++i){
             Structs.CowOrder memory order = cowOrders[id][buyToken][sellToken].heap.getOrder(i);
-            if(!isCowOrderExpired(order) && isCowOrderFullfillable(order, id, buyToken, sellToken, remainingTokensToSwap)) {
+            if(!isCowOrderExpired(order) && isCowOrderFullfillable(order, id)) {
                 remainingTokensToSwap = executeCow(sender, cowOrders[id][buyToken][sellToken], i, key, buyToken, sellToken, remainingTokensToSwap);
             }
         }
@@ -312,7 +393,7 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         return order.orderAmount < 0 || block.timestamp > order.deadline;
     }
 
-    function isCowOrderFullfillable(Structs.CowOrder memory order, PoolId id, Currency buyToken, Currency sellToken, int256 remainingTokensToSwap) internal returns (bool) {
+    function isCowOrderFullfillable(Structs.CowOrder memory order, PoolId id) internal returns (bool) {
         (, int24 currentTick, , ) = poolManager.getSlot0(id);
         if(currentTick >= order.minimumTick) return true;
         return false;
@@ -484,12 +565,11 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
     }
 
     function swapAndSettleBalances(
-        PoolKey calldata key,
+        PoolKey memory key,
         IPoolManager.SwapParams memory params
     ) internal returns (BalanceDelta) {
         // Conduct the swap inside the Pool Manager
-        BalanceDelta delta = poolManager.swap(key, params, "");
-
+        BalanceDelta delta = poolManager.swap(key, params, ""); 
         // If we just did a zeroForOne swap
         // We need to send Token 0 to PM, and receive Token 1 from PM
         if (params.zeroForOne) {
@@ -517,7 +597,7 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         return delta;
     }
 
-    function _settle(Currency currency, uint128 amount) internal {
+    function _settle(Currency currency, uint256 amount) internal {
         // Transfer tokens to PM and let it know
         poolManager.sync(currency);
         currency.transfer(address(poolManager), amount);

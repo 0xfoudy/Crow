@@ -663,4 +663,71 @@ contract OrdersHookTest is Test, Deployers {
         assertEq(newBalance1, originalBalance1);
     }
 
+    function test_fulfillExpiredOrder() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        bool zeroForOne = true;
+        uint256 deadline = block.timestamp + 10;
+        int24 tick = 0;
+
+        // Create two orders for the same user (this contract)
+        IPoolManager.SwapParams memory params1 = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data1 = abi.encode(address(this), deadline, tick);
+
+        IPoolManager.SwapParams memory params2 = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -3 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data2 = abi.encode(address(this), deadline + 5, tick - 8000);
+
+        // Place the orders
+        swapRouter.swap(key, params1, testSettings, data1);
+        swapRouter.swap(key, params2, testSettings, data2);
+
+        // Check that both orders are in place
+        assertEq(hook.getCowOrders(key.toId(), key.currency0, key.currency1).length(), 2);
+
+        // Try to fulfill the order before it expires (should revert)
+        vm.expectRevert("No expired order found for the user");
+        hook.fulfillExpiredOrder(key, key.currency0, key.currency1);
+
+        // Advance time past the first deadline but before the second
+        vm.warp(block.timestamp +deadline + 1);
+
+        // Note the original balances
+        uint256 originalBalance0 = token0.balanceOfSelf();
+        uint256 originalBalance1 = token1.balanceOfSelf();
+
+        // Fulfill the expired order
+        hook.fulfillExpiredOrder(key, key.currency0, key.currency1);
+
+        // Check that only one order remains
+        assertEq(hook.getCowOrders(key.toId(), key.currency0, key.currency1).length(), 1);
+
+        // Check that the balances have changed appropriately
+        uint256 newBalance0 = token0.balanceOfSelf();
+        uint256 newBalance1 = token1.balanceOfSelf();
+        assertEq(newBalance0, originalBalance0);
+        assertGt(newBalance1, originalBalance1);  // We should have more of token1
+
+        // Advance time past the second deadline
+        vm.warp(deadline + 6);
+
+        // Fulfill the second expired order
+        hook.fulfillExpiredOrder(key, key.currency0, key.currency1);
+
+        // Check that no orders remain
+        assertEq(hook.getCowOrders(key.toId(), key.currency0, key.currency1).length(), 0);
+
+        // Try to fulfill a non-existent order (should revert)
+        vm.expectRevert("No orders to fulfill");
+        hook.fulfillExpiredOrder(key, key.currency0, key.currency1);
+    }
+
 }
