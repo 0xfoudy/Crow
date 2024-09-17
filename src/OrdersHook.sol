@@ -121,6 +121,9 @@ contract OrdersHook is BaseHook, ERC1155 {
             sellToken,
             remainingTokensToSwap
         );
+        
+        beforeSwapDelta = toBeforeSwapDelta(int128(- params.amountSpecified - remainingTokensToSwap), 0);
+
         // check if CoW order or regular order
         if(hookData.length > 0) {
             // this NoOp will only for swap exact input and not exact output swaps
@@ -138,7 +141,7 @@ contract OrdersHook is BaseHook, ERC1155 {
             }
         }
 
-        // after our orders are executed
+        // after our orders are executed 
         return (this.beforeSwap.selector, beforeSwapDelta, 0);
     }
 
@@ -148,7 +151,6 @@ contract OrdersHook is BaseHook, ERC1155 {
 
         // `sender` is the address which initiated the swap if `sender` is the hook, we don't want to go down the `afterSwap` rabbit hole again
         if (sender == address(this)) return (this.afterSwap.selector, 0);
-
         // Should we try to find and execute orders? True initially
         bool tryMore = true;
         int24 currentTick;
@@ -326,11 +328,11 @@ contract OrdersHook is BaseHook, ERC1155 {
         else {
             int256 oldOrderAmount = order.orderAmount;
             order.orderAmount = 0;
-            remainingAmount = remainingAmountToSwap - amountOutOfOrderer;
+            remainingAmount = remainingAmountToSwap - (amountOutOfOrderer*15/10000 + amountOutOfOrderer*9985/10000);
             // sender receives the full amount out expected for their tokens
             IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(oldOrderAmount));
             // user receives all the tokens offered by sender
-            rewards[sellToken] += amountOutOfOrderer*3/1000;
+            rewards[sellToken] += amountOutOfOrderer*15/10000;
             poolManager.take(sellToken, address(this), uint256(amountOutOfOrderer*15/10000));
             poolManager.take(sellToken, order.user, uint256(amountOutOfOrderer*9985/10000));
         }

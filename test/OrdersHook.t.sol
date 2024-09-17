@@ -504,5 +504,102 @@ contract OrdersHookTest is Test, Deployers {
         assertEq(order.orderAmount, 2e18);
     }
 
+    function test_matchExactCowAtHigherTick() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 100;
+
+        // Note the original balance of token0 we have
+        uint256 originalBalance = token0.balanceOfSelf();
+        uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
+
+        // Do a the swap
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -3 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(address(this), deadline, tick);
+        
+
+        swapRouter.swap(key, params, testSettings, data);
+        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 3e18);
+
+        // Do a separate swap from oneForZero to make tick go up
+        // Sell 1e18 token1 tokens for token0 tokens
+        params = IPoolManager.SwapParams({
+            zeroForOne: !zeroForOne,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Conduct the swap - `afterSwap` should also execute our placed order
+        swapRouter.swap(key, params, testSettings, ZERO_BYTES);
+
+
+        // Last swap to match Cow
+        IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
+            zeroForOne: !zeroForOne,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        swapRouter.swap(key, reverseParams, testSettings, ZERO_BYTES);
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 0);
+    }
+
+    function test_matchExactCowAtLowerTick() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        // Perform a zeroToOne swap for 10e18 token0 tokens at tick 100, with a deadline of 10 blocks
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 100;
+
+        // Note the original balance of token0 we have
+        uint256 originalBalance = token0.balanceOfSelf();
+        uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
+
+        // Do a the swap
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -3 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(address(this), deadline, tick);
+        
+
+        swapRouter.swap(key, params, testSettings, data);
+        OrdersHook.CowOrder memory order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 3e18);
+
+        // Do a separate swap from oneForZero to make tick go up
+        // Sell 1e18 token1 tokens for token0 tokens
+        params = IPoolManager.SwapParams({
+            zeroForOne: !zeroForOne,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Conduct the swap - `afterSwap` should also execute our placed order
+        swapRouter.swap(key, params, testSettings, ZERO_BYTES);
+
+
+        // Last swap to match Cow
+        IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
+            zeroForOne: !zeroForOne,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        swapRouter.swap(key, reverseParams, testSettings, ZERO_BYTES);
+        order = hook.getCowOrders(key.toId(), key.currency0, key.currency1)[0];
+        assertEq(order.orderAmount, 0);
+    }
 
 }
