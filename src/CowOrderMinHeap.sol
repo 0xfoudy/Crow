@@ -27,7 +27,7 @@ contract CowOrderMinHeap {
     
     // Helper function to swap two elements in the heap
     function swap(uint256 i, uint256 j) private {
-        Structs.CowOrder storage temp = heap[i];
+        Structs.CowOrder memory temp = heap[i];
         heap[i] = heap[j];
         heap[j] = temp;
     }
@@ -52,13 +52,24 @@ contract CowOrderMinHeap {
     // Function to extract the minimum element from the heap
     function extractMin() public returns (Structs.CowOrder memory) {
         require(heap.length > 0, "Heap is empty");
+        return removeAt(0);
+    }
+
+    function removeAt(uint256 index) public returns (Structs.CowOrder memory) {
+        require(index < heap.length, "Index out of bounds");
+
+        Structs.CowOrder memory removedOrder = heap[index];
         
-        Structs.CowOrder storage min = heap[0];
-        heap[0] = heap[heap.length - 1];
+        // Replace the removed element with the last element
+        heap[index] = heap[heap.length - 1];
         heap.pop();
-        heapify(0);
-        
-        return min;
+        // If we didn't remove the last element, we need to adjust the heap
+        if (index < heap.length) {
+            // Try moving the element down the heap
+            heapify(index);
+        }
+
+        return removedOrder;
     }
     
     // Function to maintain the heap property

@@ -349,6 +349,12 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         }
     }
 
+    function claimRewards(Currency currency) public onlyOwner {
+        address currencyAddress = Currency.unwrap(currency);
+        uint256 balance = IERC20(currencyAddress).balanceOf(address(this));
+        IERC20(currencyAddress).transfer(owner(), balance);
+    } 
+
     function tryExecutingOrders(PoolKey calldata key, bool executeZeroForOne) internal returns (bool tryMore, int24 newTick) {
         (, int24 currentTick, , ) = poolManager.getSlot0(key.toId());
         int24 lastTick = lastTicks[key.toId()];
