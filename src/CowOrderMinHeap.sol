@@ -68,7 +68,6 @@ contract CowOrderMinHeap {
             // Try moving the element down the heap
             heapify(index);
         }
-
         return removedOrder;
     }
     
@@ -97,6 +96,7 @@ contract CowOrderMinHeap {
     }
 
     function getOrder(uint256 index) public returns (Structs.CowOrder memory) {
+        require(index < heap.length, "Index out of bounds");
         return heap[index];
     }
 

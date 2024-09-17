@@ -270,6 +270,28 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         token.transfer(msg.sender, outputAmount);
     }
 
+    // Add this new function to the OrdersHook contract
+    function cancelCowOrder(PoolKey calldata key, Currency sellToken, Currency buyToken) external {
+        PoolId id = key.toId();
+        require(cowOrders[id][sellToken][buyToken].isInit, "No orders for this pool");
+        CowOrderMinHeap heap = cowOrders[id][sellToken][buyToken].heap;
+
+        uint256 indexToRemove = type(uint256).max;
+
+        for (uint256 i = 0; i < heap.length(); i++) {
+            if (heap.getOrder(i).user == msg.sender) {
+                indexToRemove = i;
+                break;
+            }
+        }
+        require(indexToRemove != type(uint256).max, "No order found for this user");
+
+        Structs.CowOrder memory removedOrder = cowOrders[key.toId()][sellToken][buyToken].heap.removeAt(indexToRemove);
+        
+        // Return the tokens to the user
+        sellToken.transfer(msg.sender, uint256(removedOrder.orderAmount));
+    }
+
     // Internal Functions
 
     function tryMatchingCows(address sender, PoolKey memory key, Currency buyToken, Currency sellToken, int256 amountOut) internal returns (int256 remainingTokensToSwap)

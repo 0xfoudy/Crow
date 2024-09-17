@@ -23,6 +23,8 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 // Our contracts
 import {OrdersHook} from "../src/OrdersHook.sol";
 import "../src/Structs.sol";
+import "../src/CowOrderMinHeap.sol";
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract OrdersHookTest is Test, Deployers {
@@ -603,7 +605,62 @@ contract OrdersHookTest is Test, Deployers {
         assertEq(order.orderAmount, 0);
     }
 
-    function test_array() public {
+    function test_removeCowOrder() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        bool zeroForOne = true;
+        uint256 deadline = 10;
+        int24 tick = 0;
+
+        // Note the original balances
+        uint256 originalBalance0 = token0.balanceOfSelf();
+        uint256 originalBalance1 = token1.balanceOfSelf();
+
+        // Create two orders
+        IPoolManager.SwapParams memory params1 = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data1 = abi.encode(address(this), deadline, tick);
+
+        IPoolManager.SwapParams memory params2 = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -3 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data2 = abi.encode(address(this), deadline+1, tick);
+
+        // Place the orders
+        swapRouter.swap(key, params1, testSettings, data1);
+        swapRouter.swap(key, params2, testSettings, data2);
+
+        // Check that both orders are in place
+        Structs.CowOrder memory order1 = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(0);
+        Structs.CowOrder memory order2 = hook.getCowOrders(key.toId(), key.currency0, key.currency1).getOrder(1);
+        assertEq(order1.orderAmount, 5 ether);
+        assertEq(order2.orderAmount, 3 ether);
+
+        // Remove the first order
+        hook.cancelCowOrder(key, key.currency0, key.currency1);
+
+        // Check that only the second order remains
+        CowOrderMinHeap ordersHeap = hook.getCowOrders(key.toId(), key.currency0, key.currency1);
+        order1 = ordersHeap.getOrder(0);
+        assertEq(order1.orderAmount, 3 ether);
+
+        // Try to get the second order (should revert as there's only one order now)
+        vm.expectRevert();
+        ordersHeap.getOrder(1);
+
+        // Check that the balance of token0 has been returned for the removed order
+        uint256 newBalance0 = token0.balanceOfSelf();
+        assertEq(newBalance0, originalBalance0 - 3 ether);
+
+        // Check that the balance of token1 hasn't changed
+        uint256 newBalance1 = token1.balanceOfSelf();
+        assertEq(newBalance1, originalBalance1);
     }
 
 }
