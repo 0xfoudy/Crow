@@ -498,4 +498,6 @@ contract OrdersHookTest is Test, Deployers {
         order = hook.getCowOrders(key.toId(), key.currency1, key.currency0)[0];
         assertEq(order.orderAmount, 2e18);
     }
+
+    
 }

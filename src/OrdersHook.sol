@@ -49,6 +49,7 @@ contract OrdersHook is BaseHook, ERC1155 {
     mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
 
     mapping(PoolId poolId => mapping(Currency token0 => mapping(Currency token1 => CowOrder[] order))) public cowOrders;
+    mapping(Currency currency => int256 rewardBalance) rewards;
 
     // Errors
     error InvalidOrder();
@@ -318,8 +319,10 @@ contract OrdersHook is BaseHook, ERC1155 {
             remainingAmount = 0;
             // sender receives the full amount out expected for their tokens
             IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(amountOutOfSender));
-            // user receives all the tokens offered by sender
-            poolManager.take(sellToken, order.user, uint256(remainingAmountToSwap));
+            // user receives all the tokens offered by sender - fees
+            rewards[sellToken] += remainingAmountToSwap*15/10000;
+            poolManager.take(sellToken, address(this), uint256(remainingAmountToSwap*15/10000));
+            poolManager.take(sellToken, order.user, uint256(remainingAmountToSwap*9985/10000));
 
         }
         else {
@@ -329,7 +332,9 @@ contract OrdersHook is BaseHook, ERC1155 {
             // sender receives the full amount out expected for their tokens
             IERC20(Currency.unwrap(buyToken)).transfer(sender, uint256(oldOrderAmount));
             // user receives all the tokens offered by sender
-            poolManager.take(sellToken, order.user, uint256(amountOutOfOrderer));
+            rewards[sellToken] += amountOutOfOrderer*3/1000;
+            poolManager.take(sellToken, address(this), uint256(amountOutOfOrderer*15/10000));
+            poolManager.take(sellToken, order.user, uint256(amountOutOfOrderer*9985/10000));
         }
     }
 
