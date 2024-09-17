@@ -114,7 +114,6 @@ contract OrdersHook is BaseHook, ERC1155 {
 
         // Try executing matching pending orders for this pool 
         // `remainingTokensToSwap` is the amount left after fullfilling an order if no order was executed, `remainingTokensToSwap` will be the same as params.amountSpecified, and `tryMore` will be false
-
         remainingTokensToSwap = tryMatchingCows(
             sender,
             key,
@@ -126,14 +125,14 @@ contract OrdersHook is BaseHook, ERC1155 {
         if(hookData.length > 0) {
             // this NoOp will only for swap exact input and not exact output swaps
             // decode hookData to get deadline and minimum acceptable price
-            (uint256 deadline, int24 minimumTick) = abi.decode(hookData,(uint256,int24));
+            (address user, uint256 deadline, int24 minimumTick) = abi.decode(hookData,(address,uint256,int24));
             // beforeSwapDelta specified amount = negative(amountSpecified) to let it become a NoOp (letting amountToSwap become 0 in Hooks.sol) and unspecified amount to 0
             // change , so that we take the input and swapper gets back nothing in return for the moment
             beforeSwapDelta = toBeforeSwapDelta(int128(- params.amountSpecified), 0);
             if(remainingTokensToSwap > 0){
                 // create CoW order
                 // take custody of the input tokens
-                CowOrder memory cowOrder = CowOrder(sender, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
+                CowOrder memory cowOrder = CowOrder(user, remainingTokensToSwap, minimumTick, block.timestamp + deadline);
                 cowOrders[key.toId()][sellToken][buyToken].push(cowOrder);
                 poolManager.take(sellToken, address(this), uint256(remainingTokensToSwap));
             }
@@ -298,7 +297,6 @@ contract OrdersHook is BaseHook, ERC1155 {
         } else {
             amountOut = FullMath.mulDiv(inputAmount, 2**96, price);
         }
-
         return amountOut;
     }
 

@@ -370,7 +370,7 @@ contract OrdersHookTest is Test, Deployers {
             amountSpecified: -10 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        bytes memory data = abi.encode(deadline, tick);
+        bytes memory data = abi.encode(address(this), deadline, tick);
         
 
        
@@ -391,6 +391,7 @@ contract OrdersHookTest is Test, Deployers {
 
         // Note the original balance of token0 we have
         uint256 originalBalance = token0.balanceOfSelf();
+        uint256 originalBalance1 = token1.balanceOfSelf();
         uint256 hookBalance = MockERC20(Currency.unwrap(token0)).balanceOf(address(hook));
 
         // Do a the swap
@@ -399,7 +400,7 @@ contract OrdersHookTest is Test, Deployers {
             amountSpecified: -10 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        bytes memory data = abi.encode(deadline, tick);
+        bytes memory data = abi.encode(address(this), deadline, tick);
         
         IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
             zeroForOne: false,
@@ -418,6 +419,10 @@ contract OrdersHookTest is Test, Deployers {
         uint256 inverseOrderLength = hook.getCowOrders(key.toId(), key.currency1, key.currency0).length;
         // make sure other order wasn't done cause it was fully fullfilled
         assertEq(inverseOrderLength, 0);
+
+        assertEq(originalBalance - token0.balanceOfSelf(), 10 ether);
+        assertEq(originalBalance1 - token1.balanceOfSelf(), 10 ether * 15/10000); // make sure the fee was taken after all is 'returned' (fullfilled self order)
+        assertEq(MockERC20(Currency.unwrap(token0)).balanceOf(address(hook)) - hookBalance, 0);
     }
 
     function test_halfMatchCowAtCurrentTick() public {
@@ -439,7 +444,7 @@ contract OrdersHookTest is Test, Deployers {
             amountSpecified: -10 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        bytes memory data = abi.encode(deadline, tick);
+        bytes memory data = abi.encode(address(this), deadline, tick);
         
         IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
             zeroForOne: false,
@@ -479,7 +484,7 @@ contract OrdersHookTest is Test, Deployers {
             amountSpecified: -3 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
-        bytes memory data = abi.encode(deadline, tick);
+        bytes memory data = abi.encode(address(this), deadline, tick);
         
         IPoolManager.SwapParams memory reverseParams = IPoolManager.SwapParams({
             zeroForOne: false,
@@ -499,5 +504,5 @@ contract OrdersHookTest is Test, Deployers {
         assertEq(order.orderAmount, 2e18);
     }
 
-    
+
 }
