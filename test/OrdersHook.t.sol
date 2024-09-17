@@ -730,4 +730,75 @@ contract OrdersHookTest is Test, Deployers {
         hook.fulfillExpiredOrder(key, key.currency0, key.currency1);
     }
 
+    function test_fulfillExpiredOrders() public {
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest
+            .TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        bool zeroForOne = true;
+        uint256 baseDeadline = block.timestamp + 10;
+        int24 tick = 0;
+
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: true,
+            amountSpecified: -int256(1 ether),
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        bytes memory data = abi.encode(address(this), baseDeadline, tick);
+        swapRouter.swap(key, params, testSettings, data);
+
+        bytes memory data2 = abi.encode(address(this), baseDeadline + 5, tick-2000);
+        swapRouter.swap(key, params, testSettings, data2);
+
+        bytes memory data3 = abi.encode(address(this), baseDeadline + 10, tick-4000);
+        swapRouter.swap(key, params, testSettings, data3);
+
+        // Check that all orders are in place
+        assertEq(hook.getCowOrders(key.toId(), key.currency0, key.currency1).length(), 3);
+
+        // Try to fulfill orders before they expire (should revert)
+        vm.expectRevert("No fulfillable orders found");
+        hook.fulfillExpiredOrders(key, key.currency0, key.currency1, 3);
+
+        // Advance time past all deadlines
+        vm.warp(baseDeadline + 15);
+
+        // Note the original balances
+        uint256[] memory originalBalances0 = new uint256[](3);
+        uint256[] memory originalBalances1 = new uint256[](3);
+        for (uint i = 0; i < 3; i++) {
+            originalBalances0[i] = token0.balanceOf(address(this));
+            originalBalances1[i] = token1.balanceOf(address(this));
+        }
+
+        // Fulfill the expired orders (2 out of 3)
+        hook.fulfillExpiredOrders(key, key.currency0, key.currency1, 2);
+
+        // Check that only one order remains
+        assertEq(hook.getCowOrders(key.toId(), key.currency0, key.currency1).length(), 1);
+
+        // Check that the balances have changed appropriately for the first two users
+        for (uint i = 0; i < 2; i++) {
+            uint256 newBalance0 = token0.balanceOf(address(this));
+            uint256 newBalance1 = token1.balanceOf(address(this));
+            assertEq(newBalance0, originalBalances0[i]);
+            assertGt(newBalance1, originalBalances1[i]);
+        }
+
+        // Fulfill the remaining order 
+        hook.fulfillExpiredOrders(key, key.currency0, key.currency1, 1);
+
+        // Check that no orders remain
+        assertEq(hook.getCowOrders(key.toId(), key.currency0, key.currency1).length(), 0);
+
+        // Check the balance of the last user
+        uint256 newBalance0 = token0.balanceOf(address(this));
+        uint256 newBalance1 = token1.balanceOf(address(this));
+        assertEq(newBalance0, originalBalances0[2]);
+        assertGt(newBalance1, originalBalances1[2]);
+
+        // Try to fulfill orders when no orders exist (should revert)
+        vm.expectRevert("No orders to fulfill");
+        hook.fulfillExpiredOrders(key, key.currency0, key.currency1, 1);
+    }
+
 }

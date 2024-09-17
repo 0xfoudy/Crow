@@ -345,6 +345,52 @@ contract OrdersHook is BaseHook, ERC1155, Ownable {
         ), (BalanceDelta));
     }
 
+
+function fulfillExpiredOrders(PoolKey calldata key, Currency sellToken, Currency buyToken, uint256 maxOrdersToFulfill) external {
+    PoolId id = key.toId();
+    require(cowOrders[id][sellToken][buyToken].isInit, "No orders for this pool");
+    
+    CowOrderMinHeap heap = cowOrders[id][sellToken][buyToken].heap;
+    require(heap.length() > 0, "No orders to fulfill");
+
+    uint256 ordersFullfilled = 0;
+
+    for (uint256 i = 0; i < maxOrdersToFulfill && heap.length() > 0; i++) {
+        Structs.CowOrder memory orderToFulfill = heap.getOrder(0);
+        
+        if (block.timestamp > orderToFulfill.deadline && isCowOrderFullfillable(orderToFulfill, id)) {
+            // Remove the expired order from the heap
+            heap.removeAt(0);
+
+            // Determine if it's a zeroForOne swap
+            bool zeroForOne = key.currency0 == sellToken;
+
+            // Prepare swap parameters
+            IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: - orderToFulfill.orderAmount,
+                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            });
+
+            // Perform the swap
+            BalanceDelta delta = abi.decode(poolManager.unlock(
+                abi.encode(
+                    CallbackData(
+                        orderToFulfill.user,
+                        key,
+                        params
+                    )
+                )
+            ), (BalanceDelta));
+            ordersFullfilled++;
+        } else {
+            // If the first order is not fulfillable, break the loop
+            break;
+        }
+    }
+
+    require(ordersFullfilled > 0, "No fulfillable orders found");
+}
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
         CallbackData memory callbackData = abi.decode(data, (CallbackData));
         PoolKey memory key = callbackData.key;
