@@ -1,66 +1,54 @@
-## Foundry
+# OrdersHook Documentation
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## Overview
 
-Foundry consists of:
+OrdersHook is a smart contract that extends the functionality of Uniswap v4 by implementing limit orders and Coincidence of Wants (CoW) orders. It allows users to place, cancel, and fulfill orders based on specific price conditions and expiration times.
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## Key Features
 
-## Documentation
+1. **Limit Orders**: Users can place orders to buy or sell tokens at a specific price.
+2. **CoW Orders**: Enables efficient matching of complementary orders without affecting the pool price.
+3. **Order Expiration**: Orders automatically expire after a set time, ensuring market relevance.
+4. **Order Fulfillment**: Any user can fulfill expired orders, helping to clean up the order book.
 
-https://book.getfoundry.sh/
+## Main Functions
+
+### `placeOrder`
+- Places a new limit order or CoW order.
+- Parameters: pool key, tick, direction (zeroForOne), amount.
+- Returns: the lower tick of the order's price range.
+
+### `cancelOrder`
+- Cancels an existing order and returns funds to the user.
+- Parameters: pool key, tick, direction (zeroForOne).
+
+### `fulfillExpiredOrders`
+- Fulfills multiple expired orders.
+- Parameters: pool key, sell token, buy token, maximum number of orders to fulfill.
+- Can be called by any user to clean up the order book.
+
+### `deleteCowOrder`
+- Removes a specific CoW order placed by the caller.
+- Parameters: pool key, sell token, buy token.
+
+## Events
+
+- `OrderPlaced`: Emitted when a new order is placed.
+- `OrderCancelled`: Emitted when an order is cancelled.
+- `ExpiredOrderFulfilled`: Emitted when an expired order is fulfilled.
 
 ## Usage
 
-### Build
+1. Users interact with OrdersHook through a frontend or directly with the contract.
+2. Orders are stored in a min-heap data structure, optimized for efficient processing.
+3. The contract integrates with Uniswap v4's hook system, allowing for custom logic during swaps.
 
-```shell
-$ forge build
-```
+## Security Considerations
 
-### Test
+- Orders are executed only when conditions (price, expiration) are met.
+- The contract uses access control to ensure only authorized actions are performed.
+- Funds are securely managed within the Uniswap v4 pool until order execution or cancellation.
 
-```shell
-$ forge test
-```
+## Integration
 
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+OrdersHook is designed to work seamlessly with Uniswap v4 pools and can be deployed as a hook for any compatible pool.
